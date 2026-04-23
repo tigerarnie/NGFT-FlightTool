@@ -990,6 +990,7 @@ let currentPhase = PHASES[0];
 let criticalToggle = false;
 let recognition = null;
 let micActive = false;
+let lastSyncError = null; // { ts, type, localId, status, message, responseBody }
 
 // ============================================================
 // PERSISTENCE
@@ -1001,6 +1002,7 @@ function loadLocal() {
     courses = JSON.parse(localStorage.getItem(STORAGE_KEYS.courses) || '[]');
     settings = JSON.parse(localStorage.getItem(STORAGE_KEYS.settings) || '{}');
     syncQueue = JSON.parse(localStorage.getItem(STORAGE_KEYS.queue) || '[]');
+    try { lastSyncError = JSON.parse(localStorage.getItem('ngft_last_sync_error') || 'null'); } catch {}
   } catch (e) {
     console.error('Load error:', e);
   }
@@ -1107,6 +1109,19 @@ function enqueueSync(type, localId, op) {
   if (navigator.onLine) setTimeout(flushQueue, 300);
 }
 
+
+function captureSyncError(type, localId, e) {
+  lastSyncError = {
+    ts: new Date().toISOString(),
+    type, localId,
+    status: e.response?.error?.type || e.message.split(':')[0],
+    message: e.message,
+    responseBody: e.response ? JSON.stringify(e.response, null, 2) : null,
+  };
+  console.warn(`${type} sync failed:`, e.message, e.response || '');
+  try { localStorage.setItem('ngft_last_sync_error', JSON.stringify(lastSyncError)); } catch {}
+}
+
 async function flushQueue() {
   if (!navigator.onLine) return;
   if (!syncQueue.length) return;
@@ -1131,7 +1146,7 @@ async function flushQueue() {
         success = await syncCourseToAirtable(c);
       }
     } catch (e) {
-      console.warn('Sync item failed:', item, e);
+      captureSyncError(item.type, item.localId, e);
       success = false;
     }
     if (!success) remaining.push(item);
@@ -1228,7 +1243,7 @@ async function syncFlightToAirtable(f) {
     await syncInflightEvents(f);
     return true;
   } catch (e) {
-    console.warn('Flight sync failed:', e.message);
+    captureSyncError('flight', f.id, e);
     return false;
   }
 }
@@ -1259,7 +1274,7 @@ async function syncInflightEvents(f) {
     }
     saveFlights();
   } catch (e) {
-    console.warn('Event sync failed:', e.message);
+    captureSyncError('event', f.id, e);
   }
 }
 
@@ -1281,7 +1296,7 @@ async function syncStudentToAirtable(s) {
       saveStudents();
     }
     return true;
-  } catch (e) { console.warn('Student sync failed:', e.message); return false; }
+  } catch (e) { captureSyncError('student', s.id, e); return false; }
 }
 
 async function syncCourseToAirtable(c) {
@@ -1309,7 +1324,7 @@ async function syncCourseToAirtable(c) {
       saveCourses();
     }
     return true;
-  } catch (e) { console.warn('Course sync failed:', e.message); return false; }
+  } catch (e) { captureSyncError('course', c.id, e); return false; }
 }
 
 async function pullFromAirtable() {
@@ -2468,6 +2483,27 @@ function renderSetup() {
       </div>
     </div>
 
+    ${lastSyncError ? `
+    <div class="card" style="border-color: var(--red); background: rgba(211, 47, 47, 0.04);">
+      <div class="card-header">
+        <div class="card-letter" style="background: var(--red);">!</div>
+        <div>
+          <div class="card-title" style="color: var(--red);">Last Sync Error</div>
+          <div class="card-subtitle">${new Date(lastSyncError.ts).toLocaleString()}</div>
+        </div>
+      </div>
+      <div class="card-body" style="font-size: 12px;">
+        <div><strong>Type:</strong> ${escapeHtml(lastSyncError.type)} · <strong>Record:</strong> ${escapeHtml(lastSyncError.localId || '—')}</div>
+        <div style="margin-top: 6px;"><strong>Error:</strong> ${escapeHtml(lastSyncError.message)}</div>
+        ${lastSyncError.responseBody ? `<details style="margin-top:8px;"><summary>Full response</summary><pre style="background:var(--bg-panel); padding:8px; border-radius:4px; font-size:10px; overflow-x:auto; margin-top:6px; white-space:pre-wrap;">${escapeHtml(lastSyncError.responseBody)}</pre></details>` : ''}
+        <div style="margin-top: 10px;">
+          <button class="btn btn-ghost btn-sm" onclick="clearLastSyncError()">Dismiss</button>
+          <button class="btn btn-secondary btn-sm" onclick="copyLastSyncError()">Copy details</button>
+        </div>
+      </div>
+    </div>
+    ` : ''}
+
     <div class="card">
       <div class="card-header">
         <div class="card-letter">i</div>
@@ -2547,6 +2583,28 @@ function clearAllLocal() {
   saveFlights(); saveStudents(); saveCourses(); saveQueue();
   toast('All local data cleared', 'warn');
   goHome();
+}
+
+function clearLastSyncError() {
+  lastSyncError = null;
+  localStorage.removeItem('ngft_last_sync_error');
+  renderCurrentView();
+  toast('Error cleared', 'success');
+}
+
+function copyLastSyncError() {
+  if (!lastSyncError) return;
+  const text = `NGFT Flight Tool — Sync Error
+Time: ${lastSyncError.ts}
+Type: ${lastSyncError.type}
+Record: ${lastSyncError.localId}
+Status: ${lastSyncError.status}
+Message: ${lastSyncError.message}
+Response:
+${lastSyncError.responseBody || '(none)'}`;
+  navigator.clipboard.writeText(text).then(() => {
+    toast('✓ Error copied to clipboard', 'success');
+  }).catch(() => toast('Copy failed', 'warn'));
 }
 
 // ============================================================

@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NGFT Emergency Data Export</title>
+<style>
+body { font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 20px; background: #f7f7f5; color: #2B2B2B; line-height: 1.5; }
+.header { background: #15325C; color: #fff; padding: 20px; margin: -20px -20px 20px; border-bottom: 4px solid #E8713A; }
+.header h1 { margin: 0; font-size: 22px; letter-spacing: 1px; }
+.header p { margin: 6px 0 0; opacity: 0.85; font-size: 13px; }
+.card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 14px; border: 1px solid #e5e5e0; }
+h2 { color: #15325C; font-size: 17px; margin: 0 0 10px; }
+p { font-size: 14px; margin: 8px 0; }
+button { background: #E8713A; color: #fff; border: none; padding: 14px 24px; border-radius: 8px; font-size: 16px; font-weight: 700; cursor: pointer; margin: 5px 5px 5px 0; }
+button.sec { background: #fff; color: #15325C; border: 2px solid #15325C; }
+button:active { opacity: 0.8; }
+.counts { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
+.count { background: #f0f0ec; padding: 10px 14px; border-radius: 8px; text-align: center; flex: 1; min-width: 80px; }
+.count strong { display: block; font-size: 22px; color: #15325C; }
+.count span { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.8px; }
+pre { background: #fafaf8; border: 1px solid #ddd; border-radius: 6px; padding: 10px; font-size: 10px; max-height: 40vh; overflow: auto; white-space: pre-wrap; word-wrap: break-word; }
+.status { margin: 10px 0; padding: 10px 14px; border-radius: 6px; font-size: 13px; font-weight: 600; }
+.status.ok { background: #E6F4EA; color: #1E7E34; }
+.status.err { background: #FEE; color: #B30000; }
+.tip { background: rgba(232,113,58,0.1); border-left: 3px solid #E8713A; padding: 12px; border-radius: 4px; margin: 12px 0; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>NGFT · Emergency Data Export</h1>
+  <p>Extract localStorage contents without clearing any cache</p>
+</div>
+
+<div class="card">
+  <h2>Step 1 — Extract your data</h2>
+  <p>Tap the big orange button. Your flights, students, and courses will appear below.</p>
+  <button onclick="extract()">Extract Local Data</button>
+  <div id="status"></div>
+  <div id="counts" class="counts" style="display:none;"></div>
+</div>
+
+<div class="card" id="saveCard" style="display:none;">
+  <h2>Step 2 — Save the backup</h2>
+  <div class="tip">
+    <strong>Pick at least one of these:</strong><br>
+    • Tap <strong>Download JSON</strong> to save to Files<br>
+    • Tap <strong>Copy All</strong>, open Mail, paste, and email to yourself<br>
+    • Tap <strong>Copy All</strong>, open Notes, paste, and save<br>
+  </div>
+  <button onclick="downloadJson()">⬇ Download JSON</button>
+  <button class="sec" onclick="copyAll()">⎘ Copy All</button>
+</div>
+
+<div class="card" id="previewCard" style="display:none;">
+  <h2>Preview</h2>
+  <pre id="preview"></pre>
+</div>
+
+<script>
+var lastJson = '';
+function extract() {
+  var keys = ['ngft_flights','ngft_students','ngft_courses','ngft_settings','ngft_sync_queue','ngft_last_sync_error'];
+  var data = { ngft_backup_version: 1, exported_at: new Date().toISOString(), source: 'NGFT emergency export', device: navigator.userAgent };
+  for (var i = 0; i < keys.length; i++) {
+    try {
+      var v = localStorage.getItem(keys[i]);
+      if (keys[i] === 'ngft_settings' && v) {
+        var s = JSON.parse(v);
+        if (s && s.airtableToken) s.airtableToken = '***REDACTED***';
+        data[keys[i].replace('ngft_', '')] = s;
+      } else {
+        data[keys[i].replace('ngft_', '')] = v ? JSON.parse(v) : null;
+      }
+    } catch (e) { data[keys[i]] = '[parse error: ' + e.message + ']'; }
+  }
+  var flights = data.flights || [];
+  var students = data.students || [];
+  var courses = data.courses || [];
+  lastJson = JSON.stringify(data, null, 2);
+
+  document.getElementById('status').innerHTML = '<div class="status ok">✓ Extracted ' + lastJson.length.toLocaleString() + ' characters of data</div>';
+  document.getElementById('counts').style.display = 'flex';
+  document.getElementById('counts').innerHTML =
+    '<div class="count"><strong>' + flights.length + '</strong><span>flights</span></div>' +
+    '<div class="count"><strong>' + students.length + '</strong><span>students</span></div>' +
+    '<div class="count"><strong>' + courses.length + '</strong><span>courses</span></div>' +
+    '<div class="count"><strong>' + (data.sync_queue || []).length + '</strong><span>pending</span></div>';
+  document.getElementById('saveCard').style.display = 'block';
+  document.getElementById('previewCard').style.display = 'block';
+  document.getElementById('preview').textContent = lastJson;
+
+  if (flights.length === 0 && students.length === 0) {
+    document.getElementById('status').innerHTML = '<div class="status err">⚠ No NGFT data found in this browser\'s storage. Are you sure you opened this from the same origin as your NGFT app? The app must be at the exact same URL.</div>';
+  }
+}
+
+function downloadJson() {
+  if (!lastJson) { alert('Extract first'); return; }
+  var blob = new Blob([lastJson], { type: 'application/json' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  var ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
+  a.href = url;
+  a.download = 'NGFT_Backup_' + ts + '.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function copyAll() {
+  if (!lastJson) { alert('Extract first'); return; }
+  navigator.clipboard.writeText(lastJson).then(function() {
+    alert('✓ Copied ' + lastJson.length.toLocaleString() + ' characters. Paste into Notes or Mail now.');
+  }).catch(function() {
+    alert('Copy failed. Long-press the preview below to select manually.');
+  });
+}
+</script>
+</body>
+</html>

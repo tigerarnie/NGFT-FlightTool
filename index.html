@@ -2522,6 +2522,33 @@ function renderSetup() {
 
     <div class="card">
       <div class="card-header">
+        <div class="card-letter navy">💾</div>
+        <div>
+          <div class="card-title">Backup &amp; Restore</div>
+          <div class="card-subtitle">Export a complete local backup as a JSON file, or restore from one.</div>
+        </div>
+      </div>
+      <div class="card-body">
+        <div style="font-size: 12px; color: var(--gray); line-height: 1.6; margin-bottom: 10px;">
+          <strong>Export</strong> downloads a <code>.json</code> file containing all flights, students, courses, settings, and any pending sync items on this device. Save it somewhere safe (email it to yourself, AirDrop to Mac, save to Files).
+          <br><br>
+          <strong>Import</strong> merges a backup file into this device. Existing records are preserved unless you choose to overwrite.
+          <br><br>
+          <strong>Before any risky action</strong> (clearing cache, reinstalling, switching devices), run Export first.
+        </div>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px;">
+          <button class="btn btn-primary" onclick="exportBackup()">⬇ Export Backup</button>
+          <button class="btn btn-secondary" onclick="document.getElementById('importFile').click()">⬆ Import Backup</button>
+          <input type="file" id="importFile" accept=".json,application/json" style="display:none" onchange="importBackup(event)">
+        </div>
+        <div style="font-size: 12px; color: var(--gray); margin-top: 10px;">
+          Local: ${flights.length} flight${flights.length === 1 ? '' : 's'}, ${students.length} student${students.length === 1 ? '' : 's'}, ${courses.length} course${courses.length === 1 ? '' : 's'}${syncQueue.length > 0 ? `, ${syncQueue.length} pending sync` : ''}
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
         <div class="card-letter">⚠</div>
         <div>
           <div class="card-title">Danger Zone</div>
@@ -2583,6 +2610,102 @@ function clearAllLocal() {
   saveFlights(); saveStudents(); saveCourses(); saveQueue();
   toast('All local data cleared', 'warn');
   goHome();
+}
+
+function exportBackup() {
+  const payload = {
+    ngft_backup_version: 1,
+    exported_at: new Date().toISOString(),
+    source: 'NGFT Flight Tool V1.5',
+    device: navigator.userAgent,
+    flights,
+    students,
+    courses,
+    settings: { ...settings, airtableToken: settings.airtableToken ? '***REDACTED***' : undefined },
+    syncQueue,
+    lastSyncError,
+  };
+  const json = JSON.stringify(payload, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
+  a.href = url;
+  a.download = `NGFT_Backup_${ts}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  toast(`✓ Backup exported (${flights.length} flight${flights.length===1?'':'s'})`, 'success');
+}
+
+async function importBackup(event) {
+  const file = event.target.files[0];
+  event.target.value = ''; // reset so same file can be re-imported
+  if (!file) return;
+
+  const text = await file.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (e) {
+    toast('Invalid backup file — not valid JSON', 'error');
+    return;
+  }
+
+  if (!data.ngft_backup_version || !Array.isArray(data.flights)) {
+    toast('Not an NGFT backup file', 'error');
+    return;
+  }
+
+  // Count what's in the file
+  const incF = (data.flights || []).length;
+  const incS = (data.students || []).length;
+  const incC = (data.courses || []).length;
+
+  const choice = prompt(
+    `Backup contains:\n• ${incF} flight(s)\n• ${incS} student(s)\n• ${incC} course(s)\n\nType one of:\n  "merge" — keep existing, add missing\n  "replace" — WIPE this device and restore from backup\n  "cancel" — do nothing`,
+    'merge'
+  );
+
+  if (!choice || choice.toLowerCase() === 'cancel') {
+    toast('Import cancelled', 'warn');
+    return;
+  }
+
+  if (choice.toLowerCase() === 'replace') {
+    if (!confirm(`REPLACE all local data with backup? This will wipe ${flights.length} local flight(s) and restore ${incF} from the backup.`)) {
+      toast('Cancelled', 'warn');
+      return;
+    }
+    flights = data.flights || [];
+    students = data.students || [];
+    courses = data.courses || [];
+    syncQueue = data.syncQueue || [];
+    // Don't restore credentials (they were redacted) or lastSyncError
+    saveFlights(); saveStudents(); saveCourses(); saveQueue();
+    toast(`✓ Restored ${incF} flight(s)`, 'success');
+    renderCurrentView();
+    return;
+  }
+
+  // Merge: keep existing records, add ones whose IDs aren't already present
+  let addedF = 0, addedS = 0, addedC = 0;
+  const existingFlightIds = new Set(flights.map(f => f.id));
+  for (const f of (data.flights || [])) {
+    if (!existingFlightIds.has(f.id)) { flights.push(f); addedF++; }
+  }
+  const existingStudentIds = new Set(students.map(s => s.id));
+  for (const s of (data.students || [])) {
+    if (!existingStudentIds.has(s.id)) { students.push(s); addedS++; }
+  }
+  const existingCourseIds = new Set(courses.map(c => c.id));
+  for (const c of (data.courses || [])) {
+    if (!existingCourseIds.has(c.id)) { courses.push(c); addedC++; }
+  }
+  saveFlights(); saveStudents(); saveCourses();
+  toast(`✓ Merged: +${addedF} flight(s), +${addedS} student(s), +${addedC} course(s)`, 'success');
+  renderCurrentView();
 }
 
 function clearLastSyncError() {

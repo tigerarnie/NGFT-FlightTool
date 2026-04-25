@@ -2639,6 +2639,7 @@ function renderSetup() {
         <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px;">
           <button class="btn btn-primary" onclick="saveSetup()">Save &amp; Test Connection</button>
           <button class="btn btn-secondary" onclick="pullAll()">Pull Students &amp; Courses</button>
+          ${configured ? '<button class="btn btn-secondary" onclick="refreshStudentsCourses()">🔄 Refresh from Airtable</button>' : ''}
           ${configured ? '<button class="btn btn-danger" onclick="clearSetup()">Clear Credentials</button>' : ''}
         </div>
         <div class="status-line" id="setupStatus">
@@ -2681,6 +2682,7 @@ function renderSetup() {
         <p><strong>Offline-first:</strong> Every save writes to your device immediately. When you have internet, changes automatically sync to Airtable in the background.</p>
         <p style="margin-top: 8px;"><strong>Sync indicator:</strong> The dot in the top-right corner shows status: 🟢 Synced · 🟡 Pending changes · 🔴 Offline or not configured. Tap it to force a sync.</p>
         <p style="margin-top: 8px;"><strong>Multi-device:</strong> Install this app on any device (iPad, iPhone, laptop) and connect it to the same base. Students and courses sync across all devices.</p>
+        <p style="margin-top: 8px;"><strong>🔄 Refresh from Airtable:</strong> Use this button (in the Airtable Connection card above) after manually editing or deleting students/courses in Airtable. It re-pulls the canonical list and re-links your flights to the surviving records by name match.</p>
         <p style="margin-top: 8px;"><strong>Airtable is your system of record.</strong> Device data is a working copy. If you lose or wipe a device, reconfigure a new one with your token and the data reappears.</p>
       </div>
     </div>
@@ -2764,6 +2766,129 @@ async function pullAll() {
   toast('Pulling...', 'success');
   await pullFromAirtable();
   toast(`✓ Pulled ${students.length} student(s), ${courses.length} course(s)`, 'success');
+  renderCurrentView();
+}
+
+async function refreshStudentsCourses() {
+  if (!settings.airtableToken) { toast('Save credentials first', 'warn'); return; }
+  if (!confirm('Refresh students & courses from Airtable?\n\nThis will:\n• Replace local students/courses with the current Airtable list\n• Re-link each flight to the correct surviving student/course (by name)\n• Leave all flight data untouched\n\nUse this after manually deleting duplicates or making changes in Airtable.')) return;
+
+  toast('Refreshing from Airtable...', 'success');
+
+  // Step 1: Snapshot current local state for remapping
+  // Build localId → name (handles dupes — every old localId maps to its name)
+  const oldStudentLocalIdToName = {};
+  for (const s of students) {
+    if (s.id && s.name && s.name.trim()) {
+      oldStudentLocalIdToName[s.id] = s.name.trim().toLowerCase();
+    }
+  }
+  const oldCourseLocalIdToName = {};
+  for (const c of courses) {
+    if (c.id && c.course_name && c.course_name.trim()) {
+      oldCourseLocalIdToName[c.id] = c.course_name.trim().toLowerCase();
+    }
+  }
+
+  // Step 2: Wipe local students/courses (flights stay)
+  students = [];
+  courses = [];
+  saveStudents();
+  saveCourses();
+
+  // Step 3: Pull fresh from Airtable
+  try {
+    await pullFromAirtable();
+  } catch (e) {
+    toast('Pull failed: ' + e.message, 'error');
+    return;
+  }
+
+  // Step 4: Build new name → localId index from fresh data
+  const newStudentNameToLocalId = {};
+  for (const s of students) {
+    if (s.name && s.name.trim()) {
+      newStudentNameToLocalId[s.name.trim().toLowerCase()] = s.id;
+    }
+  }
+  const newCourseNameToLocalId = {};
+  for (const c of courses) {
+    if (c.course_name && c.course_name.trim()) {
+      newCourseNameToLocalId[c.course_name.trim().toLowerCase()] = c.id;
+    }
+  }
+
+  // Step 5: Walk every flight and remap studentId / courseId by name match
+  // Direct lookup: old localId → name → new localId
+  let remappedFlights = 0;
+  let orphanedStudents = 0;
+  let orphanedCourses = 0;
+  for (const f of flights) {
+    let touched = false;
+
+    if (f.header.studentId) {
+      const oldName = oldStudentLocalIdToName[f.header.studentId];
+      if (oldName) {
+        const newLocalId = newStudentNameToLocalId[oldName];
+        if (newLocalId) {
+          if (newLocalId !== f.header.studentId) {
+            f.header.studentId = newLocalId;
+            touched = true;
+          }
+        } else {
+          // Name disappeared from Airtable — orphan
+          f.header.studentId = null;
+          touched = true;
+          orphanedStudents++;
+        }
+      }
+      // If oldName is undefined, the localId was never in our local list
+      // (shouldn't happen, but leave it alone if so)
+    }
+
+    if (f.header.courseId) {
+      const oldName = oldCourseLocalIdToName[f.header.courseId];
+      if (oldName) {
+        const newLocalId = newCourseNameToLocalId[oldName];
+        if (newLocalId) {
+          if (newLocalId !== f.header.courseId) {
+            f.header.courseId = newLocalId;
+            touched = true;
+          }
+        } else {
+          f.header.courseId = null;
+          touched = true;
+          orphanedCourses++;
+        }
+      }
+    }
+
+    if (touched) {
+      f.updatedAt = new Date().toISOString();
+      enqueueSync('flight', f.id, 'update');
+      remappedFlights++;
+    }
+  }
+
+  saveFlights();
+
+  // Step 6: Clear stale sync error if any
+  lastSyncError = null;
+  localStorage.removeItem('ngft_last_sync_error');
+
+  let summary = `✓ Refreshed: ${students.length} student(s), ${courses.length} course(s)`;
+  if (remappedFlights > 0) summary += ` · re-linked ${remappedFlights} flight(s)`;
+  if (orphanedStudents > 0 || orphanedCourses > 0) {
+    const orphans = [];
+    if (orphanedStudents > 0) orphans.push(`${orphanedStudents} student link${orphanedStudents===1?'':'s'}`);
+    if (orphanedCourses > 0) orphans.push(`${orphanedCourses} course link${orphanedCourses===1?'':'s'}`);
+    summary += ` · cleared ${orphans.join(' + ')} (deleted in Airtable)`;
+  }
+  toast(summary, 'success');
+
+  // Trigger re-sync of remapped flights
+  setTimeout(() => flushQueue(), 500);
+
   renderCurrentView();
 }
 

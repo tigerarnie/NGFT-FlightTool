@@ -9,7 +9,7 @@
 // - Emergency pages: network-only
 // ============================================================
 
-const CACHE_VERSION = 'ngft-v1.6.0';
+const CACHE_VERSION = 'ngft-v1.7.0';
 const APP_SHELL = [
   './',
   './index.html',

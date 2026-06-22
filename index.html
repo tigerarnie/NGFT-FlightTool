@@ -1025,6 +1025,7 @@ let lastSyncError = null; // { ts, type, localId, status, message, responseBody 
 function loadLocal() {
   try {
     flights = JSON.parse(localStorage.getItem(STORAGE_KEYS.flights) || '[]');
+    flights.forEach(f => { if (!f.grade) f.grade = defaultGrade(); if (!f.grade.hours) f.grade.hours = defaultGrade().hours; if (!f.grade.items) f.grade.items = {}; });
     students = JSON.parse(localStorage.getItem(STORAGE_KEYS.students) || '[]');
     courses = JSON.parse(localStorage.getItem(STORAGE_KEYS.courses) || '[]');
     settings = JSON.parse(localStorage.getItem(STORAGE_KEYS.settings) || '{}');
@@ -1043,6 +1044,48 @@ function saveQueue()    { localStorage.setItem(STORAGE_KEYS.queue, JSON.stringif
 // ============================================================
 // DATA MODEL
 // ============================================================
+
+// MTR mission cards: Section A varies per card; Section B is the standing
+// airmanship/systems block graded every mission. Add new cards here.
+const MTR_CARDS = {
+  'MTR-1': {
+    id: 'MTR-1', name: 'Normal IFR Procedures',
+    areaA: [
+      { id: 'a1', task: 'Departure Procedures / SID', acs: 'AA.VI.B', tgt: '3' },
+      { id: 'a2', task: 'STAR / Arrival Procedures', acs: 'AA.VI.C', tgt: '3' },
+      { id: 'a3', task: 'VNAV Procedures & Vertical Path Management', acs: 'NGFT', tgt: '3' },
+      { id: 'a4', task: 'Holding Procedures', acs: 'AA.VI.J', tgt: '3' },
+      { id: 'a5', task: 'Non-Precision Approach', acs: 'AA.VI.D', tgt: '3' },
+      { id: 'a6', task: 'Precision Approach', acs: 'AA.VI.E', tgt: '3' },
+      { id: 'a7', task: 'Circling Approach', acs: 'AA.VI.G', tgt: '3' },
+    ],
+    areaB: [
+      { id: 'b1', task: 'Mission Preparation & Risk Assessment', acs: 'AA.I', tgt: '3' },
+      { id: 'b2', task: 'Aircraft Systems Knowledge', acs: 'AA.I.A', tgt: '3' },
+      { id: 'b3', task: 'Avionics / FMS Management', acs: 'NGFT', tgt: '3' },
+      { id: 'b4', task: 'Automation Management', acs: 'NGFT', tgt: '3' },
+      { id: 'b5', task: 'Checklist Discipline & Flows', acs: 'AA.II', tgt: '3' },
+      { id: 'b6', task: 'Communications & ATC', acs: 'NGFT', tgt: '3' },
+      { id: 'b7', task: 'Situational Awareness & ADM', acs: 'NGFT', tgt: '4' },
+      { id: 'b8', task: 'Single-Pilot Workload Management', acs: 'NGFT', tgt: '3' },
+      { id: 'b9', task: 'Emergency Procedures & Memory Items', acs: 'AA.VII.A', tgt: '3' },
+    ],
+  },
+};
+const GRADE_OPTIONS = ['', '4', '3', '2', '1', 'NG', 'NA', 'R'];
+function mtrCard(id) { return MTR_CARDS[id] || MTR_CARDS['MTR-1']; }
+function mtrItems(card) {
+  return [...card.areaA.map(i => ({ ...i, area: 'A' })), ...card.areaB.map(i => ({ ...i, area: 'B' }))];
+}
+function defaultGrade() {
+  return {
+    missionCard: 'MTR-1', items: {},
+    event: '', mission: '', overall: '',
+    assessment: '', recommendation: '', flysto: '',
+    hours: { total: '', dual: '', day: '', night: '', actInst: '', simInst: '', appr: '', ldg: '' },
+  };
+}
+
 function newFlight() {
   const now = new Date();
   return {
@@ -1068,6 +1111,7 @@ function newFlight() {
     frat: { scores: Array(12).fill(0), mitigations: '', autoMappedThreats: [] },
     inflight: { events: [] },
     clear: { critical: '', lossOfMargins: '', errors: '', actionsWorked: '', plusOne: '', trainingNeed: '', mxSquawk: false },
+    grade: defaultGrade(),
     report: { sent: false, sentDate: '', notes: '' },
   };
 }
@@ -1248,6 +1292,14 @@ function flightToAirtableFieldsTiered(f) {
     frat_mitigations: f.frat.mitigations || '',
     clear_json: JSON.stringify(f.clear),
     plus_one: f.clear.plusOne || '',
+    grade_json: JSON.stringify(f.grade || {}),
+    mission_card: (f.grade && f.grade.missionCard) || '',
+    overall_grade: (f.grade && f.grade.overall) || '',
+    event_result: (f.grade && f.grade.event) || '',
+    mission_result: (f.grade && f.grade.mission) || '',
+    assessment: (f.grade && f.grade.assessment) || '',
+    recommendation: (f.grade && f.grade.recommendation) || '',
+    flysto_link: (f.grade && f.grade.flysto) || '',
     report_notes: f.report.notes || '',
     report_sent: !!f.report.sent,
   };
@@ -1319,6 +1371,7 @@ async function syncFlightToAirtable(f) {
 
   // Tier 3: Events - independent of flight content success
   await syncInflightEvents(f);
+  await syncGradeItems(f);
   return true;
 }
 
@@ -1349,6 +1402,46 @@ async function syncInflightEvents(f) {
     saveFlights();
   } catch (e) {
     captureSyncError('event', f.id, e);
+  }
+}
+
+async function syncGradeItems(f) {
+  if (!f.airtableId || !f.grade) return;
+  try {
+    const card = mtrCard(f.grade.missionCard);
+    const items = mtrItems(card);
+    let seq = 0;
+    for (const it of items) {
+      seq++;
+      const g = f.grade.items[it.id] || {};
+      if (!g.grade && !g.remark) continue; // skip untouched items
+      const fields = {
+        item_key: f.id + '_' + it.id,
+        flight: [f.airtableId],
+        mission_card: f.grade.missionCard,
+        area: it.area,
+        task: it.task,
+        acs_ref: it.acs,
+        target: it.tgt,
+        grade: g.grade || '',
+        remark: g.remark || '',
+        sequence: seq,
+      };
+      if (g.airtableId) {
+        await atFetch(`/v0/${settings.airtableBase}/GradeItems/${g.airtableId}`, {
+          method: 'PATCH', body: JSON.stringify({ fields, typecast: true }),
+        });
+      } else {
+        const res = await atFetch(`/v0/${settings.airtableBase}/GradeItems`, {
+          method: 'POST', body: JSON.stringify({ fields, typecast: true }),
+        });
+        if (!f.grade.items[it.id]) f.grade.items[it.id] = g;
+        f.grade.items[it.id].airtableId = res.id;
+      }
+    }
+    saveFlights();
+  } catch (e) {
+    captureSyncError('grade', f.id, e);
   }
 }
 
@@ -1600,7 +1693,8 @@ function renderFlightView(f) {
     { id: 'plan',     label: '1. Plan & Brief', icon: '📋' },
     { id: 'inflight', label: '2. Inflight',     icon: '✈' },
     { id: 'debrief',  label: '3. Debrief',      icon: '✓' },
-    { id: 'report',   label: '4. Client Report', icon: '🏅' },
+    { id: 'grade',    label: '4. Grade',        icon: '🎖' },
+    { id: 'report',   label: '5. Client Report', icon: '🏅' },
   ];
   let html = `
     <button class="back-link" onclick="goHome()">← All flights</button>
@@ -1616,6 +1710,7 @@ function renderFlightView(f) {
   if (flightSubTab === 'plan')     html += renderPlanTab(f);
   if (flightSubTab === 'inflight') html += renderInflightTab(f);
   if (flightSubTab === 'debrief')  html += renderDebriefTab(f);
+  if (flightSubTab === 'grade')    html += renderGradebookTab(f);
   if (flightSubTab === 'report')   html += renderReportTab(f);
   return html;
 }
@@ -1932,6 +2027,7 @@ function advanceStatus(newStatus) {
   updateFlight(currentFlightId, f => { f.status = newStatus; });
   if (newStatus === 'inflight') setFlightTab('inflight');
   else if (newStatus === 'debrief') setFlightTab('debrief');
+  else if (newStatus === 'grading') setFlightTab('grade');
   else if (newStatus === 'complete') setFlightTab('report');
 }
 
@@ -2160,12 +2256,154 @@ function renderDebriefTab(f) {
     `)}
 
     <div class="nav-row">
-      <button class="btn btn-primary" onclick="advanceStatus('complete')">Debrief complete → Build Client Report →</button>
+      <button class="btn btn-primary" onclick="advanceStatus('grading')">Debrief complete → Grade the mission →</button>
     </div>
   `;
 }
 
 function updClear(key, value) { updateFlight(currentFlightId, f => { f.clear[key] = value; }); }
+
+// ============================================================
+// RENDER: GRADEBOOK TAB
+// ============================================================
+function gradeSelectHtml(itemId, val) {
+  return `<select class="g-sel" onchange="updGrade('${itemId}','grade',this.value)">` +
+    GRADE_OPTIONS.map(o => `<option value="${o}" ${o === val ? 'selected' : ''}>${o || '—'}</option>`).join('') +
+    `</select>`;
+}
+function plainSelectHtml(onchangeFn, val, opts) {
+  return `<select class="g-sel wide" onchange="${onchangeFn}(this.value)">` +
+    opts.map(o => `<option value="${o.v}" ${o.v === val ? 'selected' : ''}>${o.label}</option>`).join('') +
+    `</select>`;
+}
+function gradeItemRow(it, n, items) {
+  const g = items[it.id] || {};
+  return `
+    <tr>
+      <td class="g-n">${n}</td>
+      <td class="g-task">${escapeHtml(it.task)}</td>
+      <td class="g-acs">${it.acs}</td>
+      <td class="g-tgt">${it.tgt}</td>
+      <td class="g-grade">${gradeSelectHtml(it.id, g.grade || '')}</td>
+      <td class="g-rem"><input type="text" value="${escapeHtml(g.remark || '')}" placeholder="optional note" onchange="updGrade('${it.id}','remark',this.value)"></td>
+    </tr>`;
+}
+function renderGradebookTab(f) {
+  if (!f.grade) f.grade = defaultGrade();
+  const G = f.grade;
+  const card = mtrCard(G.missionCard);
+  const allItems = mtrItems(card);
+  const gradedCount = allItems.filter(it => (G.items[it.id] || {}).grade).length;
+  const criticalEvents = f.inflight.events.filter(e => e.critical);
+
+  const hourCells = [
+    ['total', 'Total'], ['dual', 'Dual'], ['day', 'Day'], ['night', 'Night'],
+    ['actInst', 'Act Inst'], ['simInst', 'Sim Inst'], ['appr', 'Appr'], ['ldg', 'Ldg'],
+  ];
+
+  let n = 0;
+  const areaRows = (arr, label) => `
+    <tr class="g-area"><td colspan="6">${label}</td></tr>
+    ${arr.map(it => gradeItemRow(it, ++n, G.items)).join('')}
+  `;
+
+  return `
+    <style>
+      .g-card-sel { display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end; margin-bottom:6px; }
+      .g-table { width:100%; border-collapse:collapse; font-size:13px; margin-top:4px; }
+      .g-table th { background:var(--navy); color:#fff; text-align:left; padding:7px 8px; font-size:12px; }
+      .g-table td { border-bottom:1px solid var(--border); padding:5px 8px; vertical-align:middle; }
+      .g-table tr:nth-child(even) td { background:var(--bg-soft); }
+      .g-area td { background:var(--bg-panel)!important; font-weight:700; color:var(--navy); font-size:12px; }
+      .g-n { width:26px; color:var(--gray); text-align:center; }
+      .g-acs { width:74px; color:var(--gray); font-size:12px; }
+      .g-tgt { width:38px; text-align:center; }
+      .g-grade { width:70px; }
+      .g-rem input { width:100%; border:1px solid var(--border); border-radius:5px; padding:4px 6px; font-size:12px; }
+      .g-sel { border:1px solid var(--border); border-radius:5px; padding:4px 6px; font-size:13px; background:#fff; }
+      .g-sel.wide { min-width:140px; }
+      .g-hours { display:grid; grid-template-columns:repeat(8,1fr); gap:6px; }
+      .g-hours .hc label { display:block; font-size:11px; color:var(--gray); text-align:center; margin-bottom:2px; }
+      .g-hours .hc input { width:100%; text-align:center; border:1px solid var(--border); border-radius:5px; padding:5px 2px; font-size:13px; }
+      .g-mission { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+      .g-prog { font-size:12px; color:var(--gray); }
+    </style>
+
+    <h2 class="section-title">Grade the Mission</h2>
+    <p class="section-subtitle">Score against the mission card. Grade in flight or at debrief — it saves instantly and syncs to Airtable.</p>
+
+    ${(f.clear.plusOne || criticalEvents.length) ? `
+      <div class="carryover">
+        <div class="carryover-label">Carry-over from Debrief</div>
+        ${criticalEvents.length ? `<div class="carryover-sub critical">Critical events flagged (${criticalEvents.length})</div>
+          <ul>${criticalEvents.map(e => `<li>[${e.phase} · ${e.time}] ${escapeHtml(e.note)}</li>`).join('')}</ul>` : ''}
+        ${f.clear.plusOne ? `<div class="carryover-sub">+1 Improvement</div><div style="font-size:13px;">${escapeHtml(f.clear.plusOne)}</div>` : ''}
+      </div>
+    ` : ''}
+
+    ${renderFrameSection('M', 'Mission Card', 'Section A is set by the card; Section B is graded every mission.', `
+      <div class="g-card-sel">
+        <div class="field" style="margin:0;">
+          <label class="field-label">Mission Card</label>
+          ${plainSelectHtml('setMissionCard', G.missionCard, Object.keys(MTR_CARDS).map(k => ({ v: k, label: k + ' · ' + MTR_CARDS[k].name })))}
+        </div>
+        <div class="field" style="margin:0; flex:1; min-width:220px;">
+          <label class="field-label">FlySto debrief link</label>
+          <input type="url" placeholder="https://app.flysto.net/..." value="${escapeHtml(G.flysto)}" onchange="updGradeField('flysto', this.value)">
+        </div>
+      </div>
+    `)}
+
+    ${renderFrameSection('H', 'Flight Time', 'Pull from your logbook after the flight. Time to one decimal; approaches and landings whole numbers.', `
+      <div class="g-hours">
+        ${hourCells.map(([k, lbl]) => `
+          <div class="hc"><label>${lbl}</label>
+            <input type="number" step="${(k === 'appr' || k === 'ldg') ? '1' : '0.1'}" value="${escapeHtml(G.hours[k] || '')}" onchange="updGradeHours('${k}', this.value)">
+          </div>`).join('')}
+      </div>
+    `)}
+
+    <h2 class="section-title" style="margin-top:18px;">Graded Items <span class="g-prog">· ${gradedCount} / ${allItems.length} graded</span></h2>
+    <table class="g-table">
+      <thead><tr><th>#</th><th>Task / Maneuver</th><th>ACS</th><th>TGT</th><th>Grade</th><th>Remarks</th></tr></thead>
+      <tbody>
+        ${areaRows(card.areaA, 'A.  Mission-Specific Tasks  —  set by the ' + card.id + ' card')}
+        ${areaRows(card.areaB, 'B.  Airmanship, SRM & Systems  —  graded every mission')}
+      </tbody>
+    </table>
+
+    ${renderFrameSection('O', 'Overall Assessment', 'Headline result and instructor narrative.', `
+      <div class="g-mission" style="margin-bottom:12px;">
+        <div class="field" style="margin:0;"><label class="field-label">Event</label>
+          ${plainSelectHtml('updEventField', G.event, [{ v: '', label: '—' }, { v: 'Complete', label: 'Complete' }, { v: 'Incomplete', label: 'Incomplete' }])}</div>
+        <div class="field" style="margin:0;"><label class="field-label">Mission</label>
+          ${plainSelectHtml('updMissionField', G.mission, [{ v: '', label: '—' }, { v: 'Effective', label: 'Effective' }, { v: 'Ineffective', label: 'Ineffective' }])}</div>
+        <div class="field" style="margin:0;"><label class="field-label">Overall Grade</label>
+          ${plainSelectHtml('updOverallField', G.overall, [{ v: '', label: '—' }, { v: '4', label: '4' }, { v: '3', label: '3' }, { v: '2', label: '2' }, { v: '1', label: '1' }])}</div>
+      </div>
+      <div class="field"><label class="field-label">Overall Assessment</label>
+        <textarea rows="4" placeholder="What stood out, strengths, the one area to sharpen" onchange="updGradeField('assessment', this.value)">${escapeHtml(G.assessment)}</textarea></div>
+      <div class="field"><label class="field-label">Recommendation — Next Mission</label>
+        <textarea rows="2" onchange="updGradeField('recommendation', this.value)">${escapeHtml(G.recommendation)}</textarea></div>
+    `)}
+
+    <div class="nav-row">
+      <button class="btn btn-primary" onclick="advanceStatus('complete')">Grading complete → Build Client Report →</button>
+    </div>
+  `;
+}
+function updGrade(itemId, field, value) {
+  updateFlight(currentFlightId, f => {
+    if (!f.grade.items[itemId]) f.grade.items[itemId] = { grade: '', remark: '' };
+    f.grade.items[itemId][field] = value;
+  });
+}
+function updGradeField(key, value) { updateFlight(currentFlightId, f => { f.grade[key] = value; }); }
+function updGradeHours(key, value) { updateFlight(currentFlightId, f => { f.grade.hours[key] = value; }); }
+function updEventField(v) { updGradeField('event', v); }
+function updMissionField(v) { updGradeField('mission', v); }
+function updOverallField(v) { updGradeField('overall', v); }
+function setMissionCard(id) { updateFlight(currentFlightId, f => { f.grade.missionCard = id; }); renderCurrentView(); }
 
 // ============================================================
 // RENDER: REPORT TAB

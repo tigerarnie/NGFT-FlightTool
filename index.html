@@ -1083,7 +1083,6 @@ function defaultGrade() {
     missionCard: 'MTR-1', items: {},
     event: '', mission: '', overall: '',
     assessment: '', recommendation: '', flysto: '',
-    trainingItems: '',
     hours: { total: '', dual: '', day: '', night: '', actInst: '', simInst: '', appr: '', ldg: '' },
   };
 }
@@ -1114,14 +1113,14 @@ function newFlight() {
     inflight: { events: [] },
     clear: { critical: '', lossOfMargins: '', errors: '', actionsWorked: '', plusOne: '', trainingNeed: '', mxSquawk: false },
     grade: defaultGrade(),
-    report: { sent: false, sentDate: '', notes: '' },
+    report: { sent: false, sentDate: '', notes: '', sendToClient: false, sendToClientDate: '' },
   };
 }
 function newStudent(name) {
   return {
     id: 'student_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
     airtableId: null, createdAt: new Date().toISOString(),
-    name: name || '', email: '', phone: '', home_base: '', certificates: '', notes: '',
+    name: name || '', email: '', phone: '', home_base: '', certificates: '', certificate_number: '', notes: '',
   };
 }
 function newCourse(name, studentId) {
@@ -1302,9 +1301,9 @@ function flightToAirtableFieldsTiered(f) {
     assessment: (f.grade && f.grade.assessment) || '',
     recommendation: (f.grade && f.grade.recommendation) || '',
     flysto_link: (f.grade && f.grade.flysto) || '',
-    training_items: (f.grade && f.grade.trainingItems) || '',
     report_notes: f.report.notes || '',
     report_sent: !!f.report.sent,
+    send_to_client: !!f.report.sendToClient,
   };
   if (level.slug) content.frat_level = level.label;
   if (f.report.sentDate) content.report_sent_date = f.report.sentDate;
@@ -1452,7 +1451,7 @@ async function syncStudentToAirtable(s) {
   try {
     const fields = {
       name: s.name, email: s.email || '', phone: s.phone || '',
-      home_base: s.home_base || '', certificates: s.certificates || '', notes: s.notes || '',
+      home_base: s.home_base || '', certificates: s.certificates || '', certificate_number: s.certificate_number || '', notes: s.notes || '',
     };
     if (s.airtableId) {
       await atFetch(`/v0/${settings.airtableBase}/Students/${s.airtableId}`, {
@@ -1673,6 +1672,7 @@ function openFlight(id) {
 }
 function setFlightTab(tab) { flightSubTab = tab; renderCurrentView(); window.scrollTo(0, 0); }
 function openSetup() { currentTab = 'setup'; renderCurrentView(); }
+function openNewPilot() { currentTab = 'newpilot'; currentStudentId = null; renderCurrentView(); window.scrollTo(0, 0); }
 function openGradebook() { currentTab = 'gradebook'; currentStudentId = null; renderCurrentView(); window.scrollTo(0, 0); }
 function openStudentGradebook(id) { currentTab = 'gradebook'; currentStudentId = id; renderCurrentView(); window.scrollTo(0, 0); }
 
@@ -1686,6 +1686,7 @@ function renderCurrentView() {
     c.innerHTML = renderFlightView(f);
   } else if (currentTab === 'setup') c.innerHTML = renderSetup();
   else if (currentTab === 'gradebook') c.innerHTML = renderGradebook();
+  else if (currentTab === 'newpilot') c.innerHTML = renderNewPilot();
   updateSyncIndicator();
 }
 
@@ -1745,7 +1746,8 @@ function renderGradebook() {
   let html = `
     <button class="back-link" onclick="goHome()">← All flights</button>
     <div class="list-header"><div><div class="list-title">Gradebook</div>
-      <div class="list-subtitle">Per-student progression for quick prep and record-keeping.</div></div></div>`;
+      <div class="list-subtitle">Per-student progression for quick prep and record-keeping.</div></div>
+      <button class="btn btn-primary btn-sm" onclick="openNewPilot()">＋ New Pilot</button></div>`;
   const withStudents = canonicalStudents().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   if (withStudents.length === 0) {
     html += `<div class="empty-state"><div class="empty-state-icon">📊</div>
@@ -1865,6 +1867,7 @@ function renderList() {
       </div>
       <div style="display:flex; gap:8px;">
         <button class="btn btn-ghost btn-sm" onclick="openGradebook()">📊 Gradebook</button>
+        <button class="btn btn-ghost btn-sm" onclick="openNewPilot()">＋ New Pilot</button>
         <button class="btn btn-ghost btn-sm" onclick="openSetup()">⚙ Setup</button>
         <button class="btn btn-primary" onclick="createNewFlight()">＋ New Flight</button>
       </div>
@@ -2617,8 +2620,6 @@ function renderGradebookTab(f) {
       </div>
       <div class="field"><label class="field-label">Overall Assessment</label>
         <textarea rows="4" placeholder="What stood out, strengths, the one area to sharpen" onchange="updGradeField('assessment', this.value)">${escapeHtml(G.assessment)}</textarea></div>
-      <div class="field"><label class="field-label">Training Items Covered <span style="font-weight:400; color:var(--gray); font-size:11px;">— used for the Training Record on ungraded continuation flights. One bullet per line. Skip if all MTR items are graded.</span></label>
-        <textarea rows="4" placeholder="One short bullet per line, e.g.&#10;ILS RWY 36R into KSTP&#10;VNAV to LPV approach work&#10;Unplanned enroute holding at FL390" onchange="updGradeField('trainingItems', this.value)">${escapeHtml(G.trainingItems || '')}</textarea></div>
       <div class="field"><label class="field-label">Recommendation — Next Mission</label>
         <textarea rows="2" onchange="updGradeField('recommendation', this.value)">${escapeHtml(G.recommendation)}</textarea></div>
     `)}
@@ -2678,6 +2679,22 @@ function renderReportTab(f) {
       <div class="report-preview" id="reportPreview">${escapeHtml(generated)}</div>
     </div>
 
+    <div class="card">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+        <div>
+          <div style="font-size:13px; font-weight:600;">
+            ${f.report.sendToClient ? "✓ Approved — packet will be emailed & filed automatically" : "Send the mission packet to your client"}
+          </div>
+          <div style="font-size:12px; color:var(--gray); margin-top:2px;">
+            ${student && student.email ? `Will email: ${escapeHtml(student.email)}` : "⚠ No client email on file — will file to Drive only."}
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="sendReportToClient()" ${f.report.sendToClient ? "disabled" : ""}>
+          ${f.report.sendToClient ? "Sent ✓" : "📤 Send to Client"}
+        </button>
+      </div>
+    </div>
+
     <div class="card" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
       <div>
         <div style="font-size:13px; font-weight:600;">
@@ -2699,6 +2716,18 @@ function markReportSent() {
     f.report.sent = true;
     f.report.sentDate = new Date().toISOString().split('T')[0];
   });
+  renderCurrentView();
+}
+
+function sendReportToClient() {
+  const f = getFlightById(currentFlightId);
+  if (!f || f.report.sendToClient) return;
+  if (!confirm("Send this mission packet to the client now? It will be emailed and filed to Drive automatically within about 15 minutes.")) return;
+  updateFlight(currentFlightId, ff => {
+    ff.report.sendToClient = true;
+    ff.report.sendToClientDate = new Date().toISOString().split("T")[0];
+  });
+  toast("Approved — packet will be delivered shortly", "success");
   renderCurrentView();
 }
 
@@ -3201,6 +3230,72 @@ function renderSetup() {
       </div>
     </div>
   `;
+}
+
+function renderNewPilot() {
+  return `
+    <button class="back-link" onclick="openGradebook()">← Gradebook</button>
+    <h1 class="list-title">New Pilot</h1>
+    <p class="list-subtitle" style="margin-bottom: 20px;">Add a pilot to your roster. Saves on this device and syncs to Airtable.</p>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-letter navy">👤</div>
+        <div>
+          <div class="card-title">Pilot Details</div>
+          <div class="card-subtitle">Name and email are recommended so mission packets can be delivered.</div>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="field">
+          <label class="field-label">Name</label>
+          <input type="text" id="npName" placeholder="First Last">
+        </div>
+        <div class="field">
+          <label class="field-label">Email</label>
+          <input type="email" id="npEmail" placeholder="pilot@example.com">
+        </div>
+        <div class="field">
+          <label class="field-label">Phone</label>
+          <input type="tel" id="npPhone" placeholder="(480) 555-1234">
+        </div>
+        <div class="field">
+          <label class="field-label">Home Base</label>
+          <input type="text" id="npHomeBase" placeholder="KSDL">
+        </div>
+        <div class="field">
+          <label class="field-label">Certificates</label>
+          <input type="text" id="npCertificates" placeholder="PPL, IR, CE-510">
+        </div>
+        <div class="field">
+          <label class="field-label">Certificate Number</label>
+          <input type="text" id="npCertNumber" placeholder="FAA certificate number">
+        </div>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px;">
+          <button class="btn btn-primary" onclick="saveNewPilot()">Save Pilot</button>
+          <button class="btn btn-secondary" onclick="openGradebook()">Cancel</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function saveNewPilot() {
+  const name = document.getElementById('npName').value.trim();
+  const email = document.getElementById('npEmail').value.trim();
+  const phone = document.getElementById('npPhone').value.trim();
+  const homeBase = document.getElementById('npHomeBase').value.trim();
+  const certificates = document.getElementById('npCertificates').value.trim();
+  const certNumber = document.getElementById('npCertNumber').value.trim();
+  if (!name) { toast('Name is required', 'warn'); return; }
+  const s = newStudent(name);
+  s.email = email; s.phone = phone; s.home_base = homeBase;
+  s.certificates = certificates; s.certificate_number = certNumber;
+  students.push(s);
+  saveStudents();
+  enqueueSync('student', s.id, 'create');
+  toast('Pilot added — syncing to Airtable', 'success');
+  openGradebook();
 }
 
 async function saveSetup() {

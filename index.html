@@ -1497,68 +1497,137 @@ async function syncCourseToAirtable(c) {
   } catch (e) { captureSyncError('course', c.id, e); return false; }
 }
 
+// --- helper 1: list a whole table, following the offset cursor ---
+async function atList(table) {
+  let records = [];
+  let offset;
+  do {
+    const qs = `pageSize=100${offset ? `&offset=${encodeURIComponent(offset)}` : ''}`;
+    const res = await atFetch(`/v0/${settings.airtableBase}/${table}?${qs}`);
+    if (res.records) records = records.concat(res.records);
+    offset = res.offset;
+  } while (offset);
+  return records;
+}
+
+// --- helper 2: safe JSON parse with fallback to existing shape ---
+function parseJSON(str, fallback) {
+  if (!str) return fallback;
+  try { const v = JSON.parse(str); return (v && typeof v === 'object') ? v : fallback; }
+  catch { return fallback; }
+}
+
+// --- replacement pull ---
 async function pullFromAirtable() {
   if (!navigator.onLine || !settings.airtableToken || !settings.airtableBase) return;
   try {
-    const sres = await atFetch(`/v0/${settings.airtableBase}/Students?pageSize=100`);
-    if (sres.records) {
-      for (const rec of sres.records) {
-        const existing = students.find(x => x.airtableId === rec.id);
-        if (existing) {
-          existing.name = rec.fields.name || existing.name;
-          existing.email = rec.fields.email || '';
-          existing.phone = rec.fields.phone || '';
-          existing.home_base = rec.fields.home_base || '';
-          existing.certificates = rec.fields.certificates || '';
-          existing.notes = rec.fields.notes || '';
-        } else {
-          students.push({
-            id: 'student_remote_' + rec.id, airtableId: rec.id,
-            createdAt: rec.createdTime || new Date().toISOString(),
-            name: rec.fields.name || '', email: rec.fields.email || '',
-            phone: rec.fields.phone || '', home_base: rec.fields.home_base || '',
-            certificates: rec.fields.certificates || '', notes: rec.fields.notes || '',
-          });
-        }
+    // ---- Students (pull first so flights/courses can resolve links) ----
+    for (const rec of await atList('Students')) {
+      const existing = students.find(x => x.airtableId === rec.id);
+      if (existing) {
+        existing.name = rec.fields.name || existing.name;
+        existing.email = rec.fields.email || '';
+        existing.phone = rec.fields.phone || '';
+        existing.home_base = rec.fields.home_base || '';
+        existing.certificates = rec.fields.certificates || '';
+        existing.notes = rec.fields.notes || '';
+      } else {
+        students.push({
+          id: 'student_remote_' + rec.id, airtableId: rec.id,
+          createdAt: rec.createdTime || new Date().toISOString(),
+          name: rec.fields.name || '', email: rec.fields.email || '',
+          phone: rec.fields.phone || '', home_base: rec.fields.home_base || '',
+          certificates: rec.fields.certificates || '', notes: rec.fields.notes || '',
+        });
       }
-      saveStudents();
     }
-    const cres = await atFetch(`/v0/${settings.airtableBase}/Courses?pageSize=100`);
-    if (cres.records) {
-      for (const rec of cres.records) {
-        const studentAtId = rec.fields.student?.[0];
-        const localStudent = students.find(s => s.airtableId === studentAtId);
-        const existing = courses.find(x => x.airtableId === rec.id);
-        if (existing) {
-          existing.course_name = rec.fields.course_name || existing.course_name;
-          existing.course_type = rec.fields.course_type || existing.course_type;
-          existing.aircraft_type = rec.fields.aircraft_type || '';
-          existing.start_date = rec.fields.start_date || '';
-          existing.end_date = rec.fields.end_date || '';
-          existing.status = rec.fields.status || 'Active';
-          existing.notes = rec.fields.notes || '';
-          if (localStudent) existing.studentId = localStudent.id;
-        } else {
-          courses.push({
-            id: 'course_remote_' + rec.id, airtableId: rec.id,
-            createdAt: rec.createdTime || new Date().toISOString(),
-            course_name: rec.fields.course_name || '',
-            studentId: localStudent ? localStudent.id : null,
-            course_type: rec.fields.course_type || 'Other',
-            aircraft_type: rec.fields.aircraft_type || '',
-            start_date: rec.fields.start_date || '',
-            end_date: rec.fields.end_date || '',
-            status: rec.fields.status || 'Active',
-            notes: rec.fields.notes || '',
-          });
-        }
+    saveStudents();
+
+    // ---- Courses ----
+    for (const rec of await atList('Courses')) {
+      const localStudent = students.find(s => s.airtableId === rec.fields.student?.[0]);
+      const existing = courses.find(x => x.airtableId === rec.id);
+      if (existing) {
+        existing.course_name = rec.fields.course_name || existing.course_name;
+        existing.course_type = rec.fields.course_type || existing.course_type;
+        existing.aircraft_type = rec.fields.aircraft_type || '';
+        existing.start_date = rec.fields.start_date || '';
+        existing.end_date = rec.fields.end_date || '';
+        existing.status = rec.fields.status || 'Active';
+        existing.notes = rec.fields.notes || '';
+        if (localStudent) existing.studentId = localStudent.id;
+      } else {
+        courses.push({
+          id: 'course_remote_' + rec.id, airtableId: rec.id,
+          createdAt: rec.createdTime || new Date().toISOString(),
+          course_name: rec.fields.course_name || '',
+          studentId: localStudent ? localStudent.id : null,
+          course_type: rec.fields.course_type || 'Other',
+          aircraft_type: rec.fields.aircraft_type || '',
+          start_date: rec.fields.start_date || '',
+          end_date: rec.fields.end_date || '',
+          status: rec.fields.status || 'Active',
+          notes: rec.fields.notes || '',
+        });
       }
-      saveCourses();
     }
+    saveCourses();
+
+    // ---- Flights (the part that was missing) ----
+    for (const rec of await atList('Flights')) {
+      const fl = rec.fields;
+      const existing = flights.find(x => x.airtableId === rec.id || x.id === fl.flight_id);
+      const f = existing || newFlight();   // newFlight() guarantees the full nested shape
+      f.airtableId = rec.id;
+      if (fl.flight_id) f.id = fl.flight_id;
+      f.status = fl.status || f.status;
+
+      // header / core
+      f.header.date        = fl.date || f.header.date;
+      f.header.aircraft    = fl.aircraft || '';
+      f.header.tail        = fl.tail || '';
+      f.header.pic         = fl.pic || f.header.pic;
+      f.header.departure   = fl.departure || '';
+      f.header.destination = fl.destination || '';
+      f.header.etd         = fl.etd || '';
+      f.header.eta         = fl.eta || '';
+      f.header.blockTime   = fl.block_time || '';
+
+      // links -> resolve to local ids
+      const st = students.find(s => s.airtableId === fl.student?.[0]);
+      const co = courses.find(c => c.airtableId === fl.course?.[0]);
+      if (st) f.header.studentId = st.id;
+      if (co) f.header.courseId  = co.id;
+
+      // training
+      f.training.phase       = fl.training_phase || '';
+      f.training.objectives  = fl.training_objectives || '';
+      f.training.syllabusItems = fl.syllabus_items || '';
+
+      // rich JSON blobs (fall back to current shape if missing/bad)
+      f.frame          = parseJSON(fl.frame_json, f.frame);
+      f.frat.scores    = parseJSON(fl.frat_scores, f.frat.scores);
+      f.frat.mitigations = fl.frat_mitigations || '';
+      f.clear          = parseJSON(fl.clear_json, f.clear);
+      f.grade          = parseJSON(fl.grade_json, f.grade);
+
+      // report
+      f.report.notes    = fl.report_notes || '';
+      f.report.sent     = !!fl.report_sent;
+      f.report.sentDate = fl.report_sent_date || '';
+
+      if (!existing) flights.push(f);
+    }
+    flights.forEach(f => { if (!f.grade) f.grade = defaultGrade(); if (!f.grade.items) f.grade.items = {}; });
+    saveFlights();
+
   } catch (e) {
     console.warn('Pull failed:', e.message);
+    lastSyncError = { when: new Date().toISOString(), msg: e.message };
+    try { localStorage.setItem('ngft_last_sync_error', JSON.stringify(lastSyncError)); } catch {}
   }
 }
+
 
 // ============================================================
 // SYNC INDICATOR

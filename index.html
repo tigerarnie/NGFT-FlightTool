@@ -1643,8 +1643,26 @@ function gbShortDate(d) {
   if (p.length === 3) return parseInt(p[2], 10) + ' ' + (m[parseInt(p[1], 10) - 1] || '');
   return d;
 }
+function aliasIds(s) {
+  const nm = (s.name || '').trim().toLowerCase();
+  if (!nm) return [s.id];
+  return students.filter(x => (x.name || '').trim().toLowerCase() === nm).map(x => x.id);
+}
+function canonicalStudents() {
+  // Collapse duplicate student records (same name) into one entry, keeping the
+  // record that carries an Airtable id as the representative.
+  const map = new Map();
+  for (const s of students) {
+    const k = (s.name || '').trim().toLowerCase() || s.id;
+    if (!map.has(k)) map.set(k, { rep: s, ids: [s.id] });
+    else { const e = map.get(k); e.ids.push(s.id); if (!e.rep.airtableId && s.airtableId) e.rep = s; }
+  }
+  return [...map.values()].map(e => ({ ...e.rep, _ids: e.ids }));
+}
 function studentFlightsSorted(studentId) {
-  return flights.filter(f => f.header.studentId === studentId)
+  const s = getStudentById(studentId);
+  const ids = s ? aliasIds(s) : [studentId];
+  return flights.filter(f => ids.includes(f.header.studentId))
     .sort((a, b) => new Date(a.header.date || a.createdAt) - new Date(b.header.date || b.createdAt));
 }
 function renderGradebook() {
@@ -1657,7 +1675,7 @@ function renderGradebook() {
     <button class="back-link" onclick="goHome()">← All flights</button>
     <div class="list-header"><div><div class="list-title">Gradebook</div>
       <div class="list-subtitle">Per-student progression for quick prep and record-keeping.</div></div></div>`;
-  const withStudents = students.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const withStudents = canonicalStudents().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   if (withStudents.length === 0) {
     html += `<div class="empty-state"><div class="empty-state-icon">📊</div>
       <div class="empty-state-title">No students yet</div>

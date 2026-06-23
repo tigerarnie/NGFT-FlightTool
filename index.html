@@ -1113,7 +1113,7 @@ function newFlight() {
     inflight: { events: [] },
     clear: { critical: '', lossOfMargins: '', errors: '', actionsWorked: '', plusOne: '', trainingNeed: '', mxSquawk: false },
     grade: defaultGrade(),
-    report: { sent: false, sentDate: '', notes: '' },
+    report: { sent: false, sentDate: '', notes: '', sendToClient: false, sendToClientDate: '' },
   };
 }
 function newStudent(name) {
@@ -1303,6 +1303,7 @@ function flightToAirtableFieldsTiered(f) {
     flysto_link: (f.grade && f.grade.flysto) || '',
     report_notes: f.report.notes || '',
     report_sent: !!f.report.sent,
+    send_to_client: !!f.report.sendToClient,
   };
   if (level.slug) content.frat_level = level.label;
   if (f.report.sentDate) content.report_sent_date = f.report.sentDate;
@@ -2610,6 +2611,22 @@ function renderReportTab(f) {
       <div class="report-preview" id="reportPreview">${escapeHtml(generated)}</div>
     </div>
 
+    <div class="card">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+        <div>
+          <div style="font-size:13px; font-weight:600;">
+            ${f.report.sendToClient ? "✓ Approved — packet will be emailed & filed automatically" : "Send the mission packet to your client"}
+          </div>
+          <div style="font-size:12px; color:var(--gray); margin-top:2px;">
+            ${student && student.email ? `Will email: ${escapeHtml(student.email)}` : "⚠ No client email on file — will file to Drive only."}
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="sendReportToClient()" ${f.report.sendToClient ? "disabled" : ""}>
+          ${f.report.sendToClient ? "Sent ✓" : "📤 Send to Client"}
+        </button>
+      </div>
+    </div>
+
     <div class="card" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
       <div>
         <div style="font-size:13px; font-weight:600;">
@@ -2631,6 +2648,18 @@ function markReportSent() {
     f.report.sent = true;
     f.report.sentDate = new Date().toISOString().split('T')[0];
   });
+  renderCurrentView();
+}
+
+function sendReportToClient() {
+  const f = getFlightById(currentFlightId);
+  if (!f || f.report.sendToClient) return;
+  if (!confirm("Send this mission packet to the client now? It will be emailed and filed to Drive automatically within about 15 minutes.")) return;
+  updateFlight(currentFlightId, ff => {
+    ff.report.sendToClient = true;
+    ff.report.sendToClientDate = new Date().toISOString().split("T")[0];
+  });
+  toast("Approved — packet will be delivered shortly", "success");
   renderCurrentView();
 }
 

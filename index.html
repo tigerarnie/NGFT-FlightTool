@@ -1120,7 +1120,7 @@ function newStudent(name) {
   return {
     id: 'student_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
     airtableId: null, createdAt: new Date().toISOString(),
-    name: name || '', email: '', phone: '', home_base: '', certificates: '', notes: '',
+    name: name || '', email: '', phone: '', home_base: '', certificates: '', certificate_number: '', notes: '',
   };
 }
 function newCourse(name, studentId) {
@@ -1450,7 +1450,7 @@ async function syncStudentToAirtable(s) {
   try {
     const fields = {
       name: s.name, email: s.email || '', phone: s.phone || '',
-      home_base: s.home_base || '', certificates: s.certificates || '', notes: s.notes || '',
+      home_base: s.home_base || '', certificates: s.certificates || '', certificate_number: s.certificate_number || '', notes: s.notes || '',
     };
     if (s.airtableId) {
       await atFetch(`/v0/${settings.airtableBase}/Students/${s.airtableId}`, {
@@ -1508,6 +1508,7 @@ async function pullFromAirtable() {
           existing.phone = rec.fields.phone || '';
           existing.home_base = rec.fields.home_base || '';
           existing.certificates = rec.fields.certificates || '';
+          existing.certificate_number = rec.fields.certificate_number || '';
           existing.notes = rec.fields.notes || '';
         } else {
           students.push({
@@ -1515,7 +1516,7 @@ async function pullFromAirtable() {
             createdAt: rec.createdTime || new Date().toISOString(),
             name: rec.fields.name || '', email: rec.fields.email || '',
             phone: rec.fields.phone || '', home_base: rec.fields.home_base || '',
-            certificates: rec.fields.certificates || '', notes: rec.fields.notes || '',
+            certificates: rec.fields.certificates || '', certificate_number: rec.fields.certificate_number || '', notes: rec.fields.notes || '',
           });
         }
       }
@@ -1602,6 +1603,7 @@ function openFlight(id) {
 }
 function setFlightTab(tab) { flightSubTab = tab; renderCurrentView(); window.scrollTo(0, 0); }
 function openSetup() { currentTab = 'setup'; renderCurrentView(); }
+function openNewPilot() { currentTab = 'newpilot'; currentStudentId = null; renderCurrentView(); window.scrollTo(0, 0); }
 function openGradebook() { currentTab = 'gradebook'; currentStudentId = null; renderCurrentView(); window.scrollTo(0, 0); }
 function openStudentGradebook(id) { currentTab = 'gradebook'; currentStudentId = id; renderCurrentView(); window.scrollTo(0, 0); }
 
@@ -1615,6 +1617,7 @@ function renderCurrentView() {
     c.innerHTML = renderFlightView(f);
   } else if (currentTab === 'setup') c.innerHTML = renderSetup();
   else if (currentTab === 'gradebook') c.innerHTML = renderGradebook();
+  else if (currentTab === 'newpilot') c.innerHTML = renderNewPilot();
   updateSyncIndicator();
 }
 
@@ -1674,7 +1677,8 @@ function renderGradebook() {
   let html = `
     <button class="back-link" onclick="goHome()">← All flights</button>
     <div class="list-header"><div><div class="list-title">Gradebook</div>
-      <div class="list-subtitle">Per-student progression for quick prep and record-keeping.</div></div></div>`;
+      <div class="list-subtitle">Per-student progression for quick prep and record-keeping.</div></div>
+      <button class="btn btn-primary btn-sm" onclick="openNewPilot()">＋ New Pilot</button></div>`;
   const withStudents = canonicalStudents().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   if (withStudents.length === 0) {
     html += `<div class="empty-state"><div class="empty-state-icon">📊</div>
@@ -1794,6 +1798,7 @@ function renderList() {
       </div>
       <div style="display:flex; gap:8px;">
         <button class="btn btn-ghost btn-sm" onclick="openGradebook()">📊 Gradebook</button>
+        <button class="btn btn-ghost btn-sm" onclick="openNewPilot()">＋ New Pilot</button>
         <button class="btn btn-ghost btn-sm" onclick="openSetup()">⚙ Setup</button>
         <button class="btn btn-primary" onclick="createNewFlight()">＋ New Flight</button>
       </div>
@@ -3128,6 +3133,72 @@ function renderSetup() {
       </div>
     </div>
   `;
+}
+
+function renderNewPilot() {
+  return `
+    <button class="back-link" onclick="openGradebook()">← Gradebook</button>
+    <h1 class="list-title">New Pilot</h1>
+    <p class="list-subtitle" style="margin-bottom: 20px;">Add a pilot to your roster. Saves on this device and syncs to Airtable.</p>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-letter navy">👤</div>
+        <div>
+          <div class="card-title">Pilot Details</div>
+          <div class="card-subtitle">Name and email are recommended so mission packets can be delivered.</div>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="field">
+          <label class="field-label">Name</label>
+          <input type="text" id="npName" placeholder="First Last">
+        </div>
+        <div class="field">
+          <label class="field-label">Email</label>
+          <input type="email" id="npEmail" placeholder="pilot@example.com">
+        </div>
+        <div class="field">
+          <label class="field-label">Phone</label>
+          <input type="tel" id="npPhone" placeholder="(480) 555-1234">
+        </div>
+        <div class="field">
+          <label class="field-label">Home Base</label>
+          <input type="text" id="npHomeBase" placeholder="KSDL">
+        </div>
+        <div class="field">
+          <label class="field-label">Certificates</label>
+          <input type="text" id="npCertificates" placeholder="PPL, IR, CE-510">
+        </div>
+        <div class="field">
+          <label class="field-label">Certificate Number</label>
+          <input type="text" id="npCertNumber" placeholder="FAA certificate number">
+        </div>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px;">
+          <button class="btn btn-primary" onclick="saveNewPilot()">Save Pilot</button>
+          <button class="btn btn-secondary" onclick="openGradebook()">Cancel</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function saveNewPilot() {
+  const name = document.getElementById('npName').value.trim();
+  const email = document.getElementById('npEmail').value.trim();
+  const phone = document.getElementById('npPhone').value.trim();
+  const homeBase = document.getElementById('npHomeBase').value.trim();
+  const certificates = document.getElementById('npCertificates').value.trim();
+  const certNumber = document.getElementById('npCertNumber').value.trim();
+  if (!name) { toast('Name is required', 'warn'); return; }
+  const s = newStudent(name);
+  s.email = email; s.phone = phone; s.home_base = homeBase;
+  s.certificates = certificates; s.certificate_number = certNumber;
+  students.push(s);
+  saveStudents();
+  enqueueSync('student', s.id, 'create');
+  toast('Pilot added — syncing to Airtable', 'success');
+  openGradebook();
 }
 
 async function saveSetup() {

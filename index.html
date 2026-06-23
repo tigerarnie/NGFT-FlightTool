@@ -1012,6 +1012,7 @@ let settings = {};
 let syncQueue = [];
 let currentFlightId = null;
 let currentTab = 'list';
+let currentStudentId = null;
 let flightSubTab = 'plan';
 let currentPhase = PHASES[0];
 let criticalToggle = false;
@@ -1601,6 +1602,8 @@ function openFlight(id) {
 }
 function setFlightTab(tab) { flightSubTab = tab; renderCurrentView(); window.scrollTo(0, 0); }
 function openSetup() { currentTab = 'setup'; renderCurrentView(); }
+function openGradebook() { currentTab = 'gradebook'; currentStudentId = null; renderCurrentView(); window.scrollTo(0, 0); }
+function openStudentGradebook(id) { currentTab = 'gradebook'; currentStudentId = id; renderCurrentView(); window.scrollTo(0, 0); }
 
 function renderCurrentView() {
   const c = document.getElementById('container');
@@ -1611,6 +1614,7 @@ function renderCurrentView() {
     if (!f) { goHome(); return; }
     c.innerHTML = renderFlightView(f);
   } else if (currentTab === 'setup') c.innerHTML = renderSetup();
+  else if (currentTab === 'gradebook') c.innerHTML = renderGradebook();
   updateSyncIndicator();
 }
 
@@ -1618,6 +1622,146 @@ function renderCurrentView() {
 // ============================================================
 // RENDER: LIST
 // ============================================================
+// ============================================================
+// RENDER: GRADEBOOK / PROGRESSION
+// ============================================================
+const GB_COLORS = {
+  '4': { bg: '#5DCAA5', ink: '#04342C' },
+  '3': { bg: '#9FE1CB', ink: '#04342C' },
+  '2': { bg: '#FAC775', ink: '#412402' },
+  '1': { bg: '#F0997B', ink: '#4A1B0C' },
+};
+function gbCell(g) {
+  if (g && GB_COLORS[g]) return GB_COLORS[g];
+  if (g) return { bg: '#E3E3DE', ink: '#5F5E5A' }; // NG/NA/R
+  return { bg: '#F4F4F1', ink: '#B4B2A9' };          // blank
+}
+function gbShortDate(d) {
+  if (!d) return '—';
+  const m = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const p = d.split('-');
+  if (p.length === 3) return parseInt(p[2], 10) + ' ' + (m[parseInt(p[1], 10) - 1] || '');
+  return d;
+}
+function studentFlightsSorted(studentId) {
+  return flights.filter(f => f.header.studentId === studentId)
+    .sort((a, b) => new Date(a.header.date || a.createdAt) - new Date(b.header.date || b.createdAt));
+}
+function renderGradebook() {
+  if (currentStudentId) {
+    const s = getStudentById(currentStudentId);
+    if (s) return renderStudentProgression(s);
+  }
+  // student picker
+  let html = `
+    <button class="back-link" onclick="goHome()">← All flights</button>
+    <div class="list-header"><div><div class="list-title">Gradebook</div>
+      <div class="list-subtitle">Per-student progression for quick prep and record-keeping.</div></div></div>`;
+  const withStudents = students.slice().sort((a, b) => a.name.localeCompare(b.name));
+  if (withStudents.length === 0) {
+    html += `<div class="empty-state"><div class="empty-state-icon">📊</div>
+      <div class="empty-state-title">No students yet</div>
+      <div>Assign a student to a flight, then grade it — they'll appear here.</div></div>`;
+    return html;
+  }
+  for (const s of withStudents) {
+    const sf = studentFlightsSorted(s.id);
+    const graded = sf.filter(f => mtrItems(mtrCard(f.grade.missionCard)).some(it => (f.grade.items[it.id] || {}).grade));
+    const last = sf.length ? sf[sf.length - 1].header.date : '';
+    const overalls = sf.map(f => parseInt(f.grade.overall, 10)).filter(n => n > 0);
+    const avg = overalls.length ? (overalls.reduce((a, b) => a + b, 0) / overalls.length).toFixed(1) : '—';
+    html += `
+      <div class="flight-card" onclick="openStudentGradebook('${s.id}')">
+        <div class="flight-card-main">
+          <div><span class="route">${escapeHtml(s.name || 'Unnamed')}</span>
+            ${s.certificates ? `<span class="date">${escapeHtml(s.certificates)}</span>` : ''}</div>
+          <div class="flight-card-meta">
+            <span>${graded.length} graded mission${graded.length === 1 ? '' : 's'}</span>
+            ${last ? `<span>🗓 Last ${gbShortDate(last)}</span>` : ''}
+            <span>Avg overall ${avg}</span>
+          </div>
+        </div>
+        <div style="color:var(--gray);">→</div>
+      </div>`;
+  }
+  return html;
+}
+function renderStudentProgression(s) {
+  const sf = studentFlightsSorted(s.id);
+  const cols = sf.slice(-8);
+  const card = mtrCard((sf[sf.length - 1] || {}).grade ? sf[sf.length - 1].grade.missionCard : 'MTR-1');
+  const tasks = mtrItems(card);
+
+  const hours = sf.reduce((a, f) => a + (parseFloat(f.grade.hours && f.grade.hours.total) || 0), 0);
+  const overalls = sf.map(f => parseInt(f.grade.overall, 10)).filter(n => n > 0);
+  const avg = overalls.length ? (overalls.reduce((a, b) => a + b, 0) / overalls.length).toFixed(1) : '—';
+  const last = sf.length ? sf[sf.length - 1] : null;
+  const lastDate = last ? gbShortDate(last.header.date) : '—';
+
+  // focus items: most recent graded value below target
+  const focus = [];
+  for (const it of tasks) {
+    let latest = null;
+    for (const f of sf) { const g = (f.grade.items[it.id] || {}).grade; if (g && /^[1-4]$/.test(g)) latest = g; }
+    if (latest && parseInt(latest, 10) < parseInt(it.tgt, 10)) focus.push(it.task);
+  }
+
+  let heat = `<table class="gb-table"><tr><td class="gb-tcorner"></td>` +
+    cols.map(f => `<td class="gb-date">${gbShortDate(f.header.date)}</td>`).join('') + `</tr>`;
+  for (const it of tasks) {
+    heat += `<tr><td class="gb-task" title="${escapeHtml(it.task)} · TGT ${it.tgt}">${escapeHtml(it.task)}</td>`;
+    heat += cols.map(f => {
+      const g = (f.grade.items[it.id] || {}).grade || '';
+      const c = gbCell(g);
+      return `<td class="gb-c" style="background:${c.bg};color:${c.ink};">${g || ''}</td>`;
+    }).join('');
+    heat += `</tr>`;
+  }
+  heat += `</table>`;
+
+  return `
+    <style>
+      .gb-stat { background:var(--bg-panel); border-radius:8px; padding:12px 14px; }
+      .gb-stat .l { font-size:12px; color:var(--gray); } .gb-stat .v { font-size:22px; font-weight:700; color:var(--navy); }
+      .gb-table { width:100%; border-collapse:separate; border-spacing:3px; table-layout:fixed; }
+      .gb-tcorner { width:34%; } .gb-date { font-size:10.5px; color:var(--gray); text-align:center; padding-bottom:2px; }
+      .gb-task { font-size:12px; color:var(--gray); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-right:8px; }
+      .gb-c { text-align:center; font-size:12px; font-weight:700; padding:5px 0; border-radius:4px; }
+      .gb-legend { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin:6px 0 10px; }
+      .gb-legend span { display:inline-flex; align-items:center; gap:5px; font-size:11px; color:var(--gray); }
+      .gb-sw { width:12px; height:12px; border-radius:3px; display:inline-block; }
+    </style>
+    <button class="back-link" onclick="openGradebook()">← Gradebook</button>
+    <div class="list-header"><div><div class="list-title">${escapeHtml(s.name || 'Unnamed')}</div>
+      <div class="list-subtitle">${escapeHtml(s.certificates || '')}${s.home_base ? ' · ' + escapeHtml(s.home_base) : ''}</div></div></div>
+
+    <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:14px;">
+      <div class="gb-stat"><div class="l">Missions</div><div class="v">${sf.length}</div></div>
+      <div class="gb-stat"><div class="l">Hours</div><div class="v">${hours ? hours.toFixed(1) : '—'}</div></div>
+      <div class="gb-stat"><div class="l">Last flown</div><div class="v" style="font-size:16px;">${lastDate}</div></div>
+      <div class="gb-stat"><div class="l">Avg overall</div><div class="v">${avg}</div></div>
+    </div>
+
+    ${(last && (last.clear.plusOne || focus.length)) ? `
+      <div class="carryover" style="margin-bottom:14px;">
+        <div class="carryover-label">Resume here — from last mission</div>
+        ${last.clear.plusOne ? `<div style="font-size:14px;"><strong>+1:</strong> ${escapeHtml(last.clear.plusOne)}</div>` : ''}
+        ${focus.length ? `<div style="font-size:13px; color:var(--gray); margin-top:4px;">Focus items: ${focus.map(escapeHtml).join(' · ')}</div>` : ''}
+      </div>` : ''}
+
+    ${sf.length === 0 ? `<div class="empty-state"><div>No graded missions for this student yet.</div></div>` : `
+      <div class="gb-legend">
+        <span style="color:var(--navy); font-weight:600;">Grade by task &amp; mission</span>
+        <span><span class="gb-sw" style="background:#5DCAA5;"></span>4</span>
+        <span><span class="gb-sw" style="background:#9FE1CB;"></span>3 · target</span>
+        <span><span class="gb-sw" style="background:#FAC775;"></span>2</span>
+        <span><span class="gb-sw" style="background:#F0997B;"></span>1</span>
+      </div>
+      ${heat}
+    `}
+  `;
+}
+
 function renderList() {
   const configured = !!settings.airtableToken;
   const orderedFlights = [...flights].sort((a, b) => {
@@ -1631,6 +1775,7 @@ function renderList() {
         <div class="list-subtitle">Plan. Fly. Debrief. Report.</div>
       </div>
       <div style="display:flex; gap:8px;">
+        <button class="btn btn-ghost btn-sm" onclick="openGradebook()">📊 Gradebook</button>
         <button class="btn btn-ghost btn-sm" onclick="openSetup()">⚙ Setup</button>
         <button class="btn btn-primary" onclick="createNewFlight()">＋ New Flight</button>
       </div>
